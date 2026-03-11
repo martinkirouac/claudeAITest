@@ -2,13 +2,13 @@
 
 ## 1. Overview
 
-A web application where authenticated users can create, view, edit, delete, and publicly share rich-text notes. Notes are created with TipTap, stored as JSON in a SQLite database, and rendered in the browser with formatting.
+A web application where authenticated users can create, view, edit, delete, and publicly share rich-text notes. Notes are created with Quill.js, stored as JSON in a SQLite database, and rendered in the browser with formatting.
 
 ### Core Features
 
-- User authentication (sign up, login, logout) via better-auth
+- User authentication (sign up, login, logout) via Spring Security
 - Authenticated note management (CRUD)
-- Rich text editor using TipTap with:
+- Rich text editor using Quill.js with:
   - Bold, Italic
   - Heading levels (H1–H3) + normal text
   - Inline code + code blocks
@@ -18,36 +18,38 @@ A web application where authenticated users can create, view, edit, delete, and 
 
 ### Tech
 
-- Next.js (App Router) + Bun runtime
-- TypeScript
-- TailwindCSS
-- SQLite via Bun's SQLite client with raw SQL
+- Java 21 + Spring Boot 3
+- Thymeleaf (server-rendered HTML templates)
+- TailwindCSS (via CDN) + prose styling for read-only content
+- SQLite via `org.xerial:sqlite-jdbc` with Spring JDBC (raw SQL)
+- Maven build
 
 ## 2. Architecture
 
 ### 2.1 High-Level Architecture
 
-- **Frontend & Backend:** Next.js (App Router)
-  - Server components for data fetching
-  - Client components for TipTap editor and interactive UI
-  - Route Handlers (`app/api/.../route.ts`) for JSON APIs
-- **Runtime:** Bun (for dev & production)
-- **Database:** Single SQLite file (e.g., `data/app.db`) accessed via Bun's SQLite client
-- **Auth:** better-auth integrated into Next.js (middleware + server helpers)
+- **Frontend & Backend:** Spring Boot (Spring MVC)
+  - Thymeleaf templates for server-rendered pages
+  - REST API controllers for JSON endpoints consumed by client-side JS
+  - Quill.js editor loaded from CDN in Thymeleaf templates
+- **Runtime:** JVM (Java 21)
+- **Database:** Single SQLite file (e.g., `data/app.db`) accessed via Spring JDBC
+- **Auth:** Spring Security with form login, BCrypt password encoding, session-based auth
 
 ### 2.2 Application Layers
 
 **Presentation layer**
-- Next.js pages and components
-- TailwindCSS for styling
-- TipTap editor component
+- Thymeleaf HTML templates
+- TailwindCSS for styling (CDN)
+- Quill.js editor in browser
 
 **API layer**
-- REST-like JSON endpoints for notes CRUD & sharing
+- REST JSON endpoints (`@RestController`) for notes CRUD & sharing (consumed by JS)
+- MVC controllers (`@Controller`) for page rendering
 
 **Data access layer**
-- Raw SQL queries executed via Bun's SQLite client
-- A small helper module for DB access
+- Raw SQL queries via `JdbcTemplate`
+- Repository classes per domain entity
 
 ## 3. Functional Requirements
 
@@ -57,27 +59,27 @@ Users can:
 - Register (email + password, minimum validation)
 - Log in / log out
 
-Authentication state is accessible on server (for SSR) and on client (for protected UI).
+Authentication state is managed by Spring Security via HTTP session.
 
 Unauthenticated users:
 - Can access public shared note URLs (read-only)
-- Cannot access dashboard or personal notes
+- Cannot access dashboard or personal notes (redirected to `/login`)
 
 ### 3.2 Notes Management (Authenticated)
 
 **Create a new note:**
 - Default title: "Untitled note"
-- Default empty TipTap document
+- Default empty Quill Delta document
 
 **View a list of own notes:**
 - Show title, last updated at, shared status
 
 **View a single note:**
-- Load editor with stored TipTap JSON document
+- Load editor with stored Quill Delta JSON document
 
 **Update note:**
 - Change title
-- Change content (TipTap JSON)
+- Change content (Quill Delta JSON)
 - Auto-update `updated_at`
 
 **Delete note:**
@@ -88,7 +90,7 @@ Unauthenticated users:
 Users can toggle note "public sharing":
 
 **When enabled:**
-- Note gets a unique public slug (e.g. `abcdef1234`)
+- Note gets a unique public slug (e.g. `abcdef1234abcdef`, 16 hex chars)
 - Accessible via `/p/{slug}` for anonymous users
 
 **When disabled:**
@@ -96,7 +98,7 @@ Users can toggle note "public sharing":
 
 **Public page rendering:**
 - Reads note from DB by `public_slug`
-- Shows title and content in read-only mode
+- Shows title and content in read-only mode (Quill viewer)
 - No editing or owner information necessary
 
 ## 4. Non-Functional Requirements
@@ -107,13 +109,14 @@ Users can toggle note "public sharing":
 **Security**
 - All note operations are scoped to authenticated user's `user_id`
 - Public notes are read-only; no leaked private data in API responses
+- Passwords hashed with BCrypt
 
 **Reliability**
-- Graceful handling of DB errors
+- Graceful handling of DB errors (Spring exception handling)
 
 **Maintainability**
-- Type-safe APIs and DB types
-- Modularized DB and auth helpers
+- Type-safe Java models
+- Modularized repository and service classes
 
 **UX**
 - Simple, minimal UI with keyboard-friendly editor
@@ -122,124 +125,23 @@ Users can toggle note "public sharing":
 
 ### 5.1 Tables
 
-#### better-auth Core Tables
-
-better-auth manages its own tables for authentication. The following tables are required by better-auth:
-
-**user**
+#### users
 
 ```sql
-CREATE TABLE user (
+CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
-  emailVerified INTEGER NOT NULL DEFAULT 0,
-  image TEXT,
-  createdAt TEXT NOT NULL DEFAULT (datetime('now')),
-  updatedAt TEXT NOT NULL DEFAULT (datetime('now'))
+  password TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | TEXT | Unique identifier for each user (primary key) |
-| name | TEXT | User's chosen display name |
-| email | TEXT | User's email address for communication and login |
-| emailVerified | INTEGER | Whether the user's email is verified (0 or 1) |
-| image | TEXT | User's image URL (optional) |
-| createdAt | TEXT | Timestamp of when the user account was created |
-| updatedAt | TEXT | Timestamp of the last update to the user's information |
-
-**session**
-
-```sql
-CREATE TABLE session (
-  id TEXT PRIMARY KEY,
-  userId TEXT NOT NULL,
-  token TEXT NOT NULL UNIQUE,
-  expiresAt TEXT NOT NULL,
-  ipAddress TEXT,
-  userAgent TEXT,
-  createdAt TEXT NOT NULL DEFAULT (datetime('now')),
-  updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (userId) REFERENCES user(id)
-);
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | TEXT | Unique identifier for each session (primary key) |
-| userId | TEXT | The ID of the user (foreign key) |
-| token | TEXT | The unique session token |
-| expiresAt | TEXT | The time when the session expires |
-| ipAddress | TEXT | The IP address of the device (optional) |
-| userAgent | TEXT | The user agent information of the device (optional) |
-| createdAt | TEXT | Timestamp of when the session was created |
-| updatedAt | TEXT | Timestamp of when the session was updated |
-
-**account**
-
-```sql
-CREATE TABLE account (
-  id TEXT PRIMARY KEY,
-  userId TEXT NOT NULL,
-  accountId TEXT NOT NULL,
-  providerId TEXT NOT NULL,
-  accessToken TEXT,
-  refreshToken TEXT,
-  accessTokenExpiresAt TEXT,
-  refreshTokenExpiresAt TEXT,
-  scope TEXT,
-  idToken TEXT,
-  password TEXT,
-  createdAt TEXT NOT NULL DEFAULT (datetime('now')),
-  updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (userId) REFERENCES user(id)
-);
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | TEXT | Unique identifier for each account (primary key) |
-| userId | TEXT | The ID of the user (foreign key) |
-| accountId | TEXT | The ID of the account as provided by SSO or equal to userId for credential accounts |
-| providerId | TEXT | The ID of the provider (e.g., "credential", "google", "github") |
-| accessToken | TEXT | The access token returned by the provider (optional) |
-| refreshToken | TEXT | The refresh token returned by the provider (optional) |
-| accessTokenExpiresAt | TEXT | The time when the access token expires (optional) |
-| refreshTokenExpiresAt | TEXT | The time when the refresh token expires (optional) |
-| scope | TEXT | The scope of the account returned by the provider (optional) |
-| idToken | TEXT | The ID token returned from the provider (optional) |
-| password | TEXT | The hashed password for email/password authentication (optional) |
-| createdAt | TEXT | Timestamp of when the account was created |
-| updatedAt | TEXT | Timestamp of when the account was updated |
-
-**verification**
-
-```sql
-CREATE TABLE verification (
-  id TEXT PRIMARY KEY,
-  identifier TEXT NOT NULL,
-  value TEXT NOT NULL,
-  expiresAt TEXT NOT NULL,
-  createdAt TEXT NOT NULL DEFAULT (datetime('now')),
-  updatedAt TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | TEXT | Unique identifier for each verification (primary key) |
-| identifier | TEXT | The identifier for the verification request |
-| value | TEXT | The value to be verified |
-| expiresAt | TEXT | The time when the verification request expires |
-| createdAt | TEXT | Timestamp of when the verification request was created |
-| updatedAt | TEXT | Timestamp of when the verification request was updated |
 
 #### notes
 
 ```sql
-CREATE TABLE notes (
+CREATE TABLE IF NOT EXISTS notes (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -248,80 +150,87 @@ CREATE TABLE notes (
   public_slug TEXT UNIQUE,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (user_id) REFERENCES user(id)
+  FOREIGN KEY (user_id) REFERENCES users(id)
 );
 ```
 
 ### 5.2 Indexes
 
 ```sql
-CREATE INDEX idx_notes_user_id ON notes(user_id);
-CREATE INDEX idx_notes_public_slug ON notes(public_slug);
-CREATE INDEX idx_notes_is_public ON notes(is_public);
+CREATE INDEX IF NOT EXISTS idx_notes_user_id ON notes(user_id);
+CREATE INDEX IF NOT EXISTS idx_notes_public_slug ON notes(public_slug);
+CREATE INDEX IF NOT EXISTS idx_notes_is_public ON notes(is_public);
 ```
+
+### 5.3 Schema Initialization
+
+Schema SQL lives in `src/main/resources/schema.sql` and is applied on startup via `spring.sql.init.mode=always`.
 
 ## 6. Backend: DB & API Layer
 
-### 6.1 Database Access Module
+### 6.1 Database Configuration
 
-**File:** `lib/db.ts`
+**File:** `config/DatabaseConfig.java`
+- Configures a `DataSource` using `org.xerial:sqlite-jdbc` pointing to `data/app.db`
+- Exposes a `JdbcTemplate` bean injected into repositories
 
-- Initialize Bun SQLite client with DB file (`app.db`)
-- Export helper functions such as:
-  - `getDb()` – returns singleton DB connection
-  - Utility wrappers for:
-    - `query<T>(sql, params?): T[]`
-    - `get<T>(sql, params?): T | undefined`
-    - `run(sql, params?)`
+### 6.2 User Repository
 
-### 6.2 Note Repository Functions
+**File:** `repository/UserRepository.java`
 
-**File:** `lib/notes.ts`
+Methods:
+- `Optional<User> findByEmail(String email)`
+- `User save(User user)`
 
-**TypeScript types:**
+### 6.3 Note Repository
 
-```typescript
-export type Note = {
-  id: string;
-  userId: string;
-  title: string;
-  contentJson: string; // stringified TipTap doc
-  isPublic: boolean;
-  publicSlug: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
+**File:** `repository/NoteRepository.java`
+
+**Java model:**
+
+```java
+public class Note {
+  private String id;
+  private String userId;
+  private String title;
+  private String contentJson;   // stringified Quill Delta
+  private boolean isPublic;
+  private String publicSlug;    // nullable
+  private String createdAt;
+  private String updatedAt;
+}
 ```
 
-**Repository functions:**
+**Repository methods:**
 
-- `createNote(userId: string, data: { title?: string; contentJson?: string }): Promise<Note>`
-- `getNoteById(userId: string, noteId: string): Promise<Note | null>`
-- `getNotesByUser(userId: string): Promise<Note[]>`
-- `updateNote(userId: string, noteId: string, data: Partial<{ title: string; contentJson: string }>): Promise<Note | null>`
-- `deleteNote(userId: string, noteId: string): Promise<void>`
-- `setNotePublic(userId: string, noteId: string, isPublic: boolean): Promise<Note | null>`
-- `getNoteByPublicSlug(slug: string): Promise<Note | null>`
+- `Note create(String userId, String title, String contentJson)`
+- `Optional<Note> findById(String userId, String noteId)`
+- `List<Note> findAllByUser(String userId)`
+- `Optional<Note> update(String userId, String noteId, String title, String contentJson)`
+- `void delete(String userId, String noteId)`
+- `Optional<Note> setPublic(String userId, String noteId, boolean isPublic)`
+- `Optional<Note> findByPublicSlug(String slug)`
 
-Each function enforces `user_id = ?` in SQL where applicable, to avoid cross-user access.
+Each method enforces `user_id = ?` in SQL where applicable.
 
-## 7. API Design (Next.js Route Handlers)
+## 7. API Design
 
-Base path under `/api/notes`.
+### 7.1 Authentication
 
-### 7.1 Authentication Access
+Spring Security handles form login:
+- `GET /login` — login page
+- `POST /login` — form submit (`username`, `password`)
+- `POST /logout`
+- `GET /register` + `POST /register`
 
-Implement a server helper from better-auth like `getCurrentUser()` or `getSession()`.
+All `/api/notes/**` handlers check `SecurityContextHolder` for an authenticated principal. Return 401 if not authenticated.
 
-All `/api/notes` handlers (except public read) must:
-- Check auth
-- Return 401 if not authenticated
+### 7.2 REST Endpoints (`@RestController`)
 
-### 7.2 Endpoints
+Base path: `/api/notes`
 
 #### GET /api/notes
-
-**Description:** List notes for current user.
+List notes for current user.
 
 **Response 200:**
 ```json
@@ -330,76 +239,43 @@ All `/api/notes` handlers (except public read) must:
     "id": "note-id",
     "title": "My Note",
     "isPublic": true,
-    "updatedAt": "2025-01-01T12:00:00Z"
+    "updatedAt": "2025-01-01T12:00:00"
   }
 ]
 ```
 
-Optionally omit `contentJson` for list for performance.
-
 #### POST /api/notes
+Create a new note.
 
-**Description:** Create a new note.
-
-**Request body (JSON):**
+**Request body:**
 ```json
 {
   "title": "Optional title",
-  "contentJson": { "type": "doc", ... }
+  "contentJson": "{\"ops\":[{\"insert\":\"\\n\"}]}"
 }
 ```
 
-**Behavior:**
-- Default title = "Untitled note" if missing
-- Default `contentJson` = empty TipTap document if missing
+**Response 201:** created Note
 
-**Response 201:** created Note (or minimal subset)
+#### GET /api/notes/{id}
+Get single note. Returns 404 if not found or not owned by user.
 
-#### GET /api/notes/:id
+#### PUT /api/notes/{id}
+Update note title/content. Returns 200 with updated note or 404.
 
-**Description:** Get single note owned by current user.
+#### DELETE /api/notes/{id}
+Delete note. Returns 204 or 404.
 
-**Response:**
-- 200 with full note including `contentJson`
-- 404 if not found or not owned by user
-
-#### PUT /api/notes/:id
-
-**Description:** Update note title/content.
+#### POST /api/notes/{id}/share
+Toggle public sharing.
 
 **Request body:**
 ```json
-{
-  "title": "New title",
-  "contentJson": { ... }
-}
-```
-
-**Response:**
-- 200 with updated note
-- 404 if not found
-
-#### DELETE /api/notes/:id
-
-**Description:** Delete note.
-
-**Response:**
-- 204 on success
-- 404 if not found
-
-#### POST /api/notes/:id/share
-
-**Description:** Toggle public sharing.
-
-**Request body:**
-```json
-{
-  "isPublic": true
-}
+{ "isPublic": true }
 ```
 
 **Behavior:**
-- If `isPublic = true` and note has no `public_slug`, generate new slug (`nanoid()`)
+- If `isPublic = true` and no `public_slug` exists, generate one: first 16 chars of `UUID.randomUUID().toString().replace("-", "")`
 - If `isPublic = false`, set `is_public = 0` and `public_slug = NULL`
 
 **Response 200:**
@@ -407,157 +283,199 @@ Optionally omit `contentJson` for list for performance.
 {
   "id": "note-id",
   "isPublic": true,
-  "publicSlug": "abcdef1234"
+  "publicSlug": "abcdef1234abcdef"
 }
 ```
 
-### 7.3 Public Note Endpoint
+### 7.3 Public Note
 
-#### GET /api/public-notes/:slug
+**Page:** `GET /p/{slug}` — handled by `@Controller`, renders Thymeleaf template with read-only Quill viewer.
+Returns 404 if slug not found or `is_public = 0`.
 
-**Description:** Read-only access to public notes.
-
-**Response 200:**
-```json
-{
-  "title": "Public note",
-  "contentJson": { ... }
-}
-```
-
-- 404 if slug not found or `is_public = 0`
-
-(Or skip this API and just resolve directly in the `/p/[slug]` route using server components.)
-
-## 8. Frontend – Pages & Components
+## 8. Frontend – Pages & Components (Thymeleaf)
 
 ### 8.1 Routes
 
-Assuming Next.js App Router structure:
+- `/` — Landing page (`index.html`)
+- `/login` — Login form (`auth/login.html`)
+- `/register` — Registration form (`auth/register.html`)
+- `/dashboard` — Notes list (`dashboard.html`)
+- `/notes/{id}` — Note editor page (`notes/editor.html`)
+- `/p/{slug}` — Public note page (`public/note.html`)
 
-- `/` – Landing page
-  - Marketing / "Log in / Sign up" CTA
-- `/dashboard` – Authenticated area
-  - List of user notes
-  - "Create note" button
-- `/notes/[id]` – Authenticated note editor page
-  - TipTap editor
-  - Title field
-  - Share toggle
-  - Delete button
-- `/p/[slug]` – Public note page
-  - Read-only content
-  - No nav to user-specific area if viewer is unauthenticated
+### 8.2 Layout
 
-### 8.2 Layout & Navigation
+- Shared Thymeleaf fragment: `fragments/layout.html`
+  - Header with app name, login/logout link
+  - TailwindCSS CDN in `<head>`
+  - Quill CDN loaded where needed
 
-- Global layout: `app/layout.tsx`
-  - Header with app name, login/logout/account & theme
-- `app/(auth)/login`, `app/(auth)/register` (if better-auth doesn't provide their own UI)
+### 8.3 Templates
 
-### 8.3 Components
+**templates/dashboard.html**
+- Lists user notes: title, last updated, public badge
+- Link to `/notes/{id}` for each note
+- "New Note" button (POST form or JS call to `POST /api/notes`, redirect to new note)
 
-**components/NoteList.tsx**
-- Props: `notes: { id, title, updatedAt, isPublic }[]`
-- Renders list with links to `/notes/[id]`
+**templates/notes/editor.html**
+- Title `<input>` (auto-saves on blur via `PUT /api/notes/{id}`)
+- Quill.js editor div (auto-saves on text change, debounced 1s)
+- Share toggle (calls `POST /api/notes/{id}/share`, shows public URL when enabled)
+- Delete button (calls `DELETE /api/notes/{id}`, redirects to dashboard on success)
 
-**components/NoteEditor.tsx**
-- TipTap-based editor
-- Controlled by parent (`onChange` updates state, eventual API call)
+**templates/public/note.html**
+- Read-only Quill viewer (`readOnly: true`, `theme: 'bubble'`)
+- Displays note title and content
 
-**components/ShareToggle.tsx**
-- Switch/checkbox for `isPublic`
-- Shows public URL when enabled
+### 8.4 Client-Side JS
 
-**components/DeleteNoteButton.tsx**
-- Confirms and calls DELETE API
+**static/js/editor.js**
+- Initializes Quill editor with toolbar
+- Debounced auto-save (PUT `/api/notes/{id}`)
+- Share toggle handler (POST `/api/notes/{id}/share`)
+- Delete button with confirmation dialog
 
-**components/PublicNoteViewer.tsx**
-- Render TipTap content in read-only mode (or use `EditorContent` with `editable: false`)
+## 9. Quill.js Integration
 
-## 9. TipTap Integration
+### 9.1 Toolbar Config
 
-### 9.1 Extensions
+```javascript
+const toolbarOptions = [
+  ['bold', 'italic'],
+  [{ 'header': [1, 2, 3, false] }],
+  [{ 'list': 'bullet' }],
+  ['code'],
+  ['code-block']
+];
 
-Enable at minimum:
-- `StarterKit` (with paragraphs, headings, bold, italic, bullet lists, horizontal rule, etc.)
-- `Code` (inline code)
-- `CodeBlockLowlight` or `CodeBlock` (for code snippets)
-
-**Example editor config:**
-
-```typescript
-import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Code from '@tiptap/extension-code';
-import CodeBlock from '@tiptap/extension-code-block';
-
-const editor = useEditor({
-  extensions: [
-    StarterKit.configure({
-      heading: { levels: [1, 2, 3] },
-    }),
-    Code,
-    CodeBlock
-  ],
-  content: initialContentJson,  // TipTap JSON
-  onUpdate: ({ editor }) => {
-    const json = editor.getJSON();
-    onChange(json);
-  },
+const quill = new Quill('#editor', {
+  theme: 'snow',
+  modules: { toolbar: toolbarOptions }
 });
 ```
 
-Content is always stored in DB as `JSON.stringify(json)`; when loading, `JSON.parse` and pass as `content`.
+Load via CDN in Thymeleaf:
+```html
+<link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
+<script src="https://cdn.quilljs.com/1.3.7/quill.js"></script>
+```
 
-### 9.2 Toolbar
+### 9.2 Content Storage
 
-Buttons:
-- Bold, Italic
-- H1, H2, H3, paragraph
-- Bullet list
-- Inline code
-- Code block
-- Horizontal rule
+Content stored as `JSON.stringify(quill.getContents())` (Quill Delta format).
 
-Each button calls the relevant TipTap chain: `editor.chain().focus().toggleBold().run()` etc.
+When loading: `quill.setContents(JSON.parse(contentJson))`.
+
+### 9.3 Read-Only Viewer
+
+```javascript
+const quill = new Quill('#viewer', {
+  readOnly: true,
+  theme: 'bubble'
+});
+quill.setContents(JSON.parse(contentJson));
+```
 
 ## 10. Styling (TailwindCSS)
 
-- Configure Tailwind in `tailwind.config.ts`
-- Use a minimal design:
-  - Neutral background, card-like note container
-  - Utility classes on components
-- Consider a prose style for read-only content (using `@tailwindcss/typography`)
+- TailwindCSS loaded via CDN `<script>` tag in Thymeleaf base layout
+- Minimal design: neutral background, card-like note container
+- Prose-style utility classes for read-only content rendering
 
 ## 11. Security Considerations
 
 **Auth enforcement**
-- All `/dashboard` and `/notes/[id]` routes check auth on server
-- API routes verify user and attach `userId` from session
+- Spring Security `HttpSecurity` secures `/dashboard/**` and `/notes/**`
+- Redirects unauthenticated users to `/login`
+- CSRF protection enabled (Spring Security default)
 
 **Authorization**
-- Every note query in the auth context filters by `user_id`
+- Every note SQL query filters by `user_id = ?` matching the authenticated principal's ID
 
 **Public notes**
-- Slug should be sufficiently random to prevent guessing (e.g. 16+ chars)
+- Slug is 16 random hex chars — sufficiently unguessable
+- Public endpoint is read-only, response contains no user data
 
 **XSS**
-- Primary data is TipTap JSON, not raw HTML
-- When rendering to HTML, only use TipTap's rendering (no arbitrary `dangerouslySetInnerHTML` with unsanitized data)
+- Content stored as Quill Delta JSON, not raw HTML
+- Quill handles rendering in a sandboxed iframe-like context; no arbitrary `innerHTML` of unsanitized input
 
-**Rate limiting (optional enhancement)**
-- Apply per-IP or per-user rate limiting to API routes if exposed publicly
+**Password security**
+- BCryptPasswordEncoder for all password hashing
 
-## 12. Development Workflow
+## 12. Project Structure
 
-1. Initialize Next.js app with Bun & TypeScript
-2. Set up TailwindCSS
-3. Integrate better-auth and session handling
-4. Implement SQLite DB initialization and migrations (e.g. via a `scripts/init-db.ts` or manual `.sql`)
-5. Build DB helpers and note repository
-6. Implement `/api/notes` and sharing APIs
-7. Build dashboard and note editor pages
-8. Integrate TipTap editor and toolbar
-9. Implement public note pages `/p/[slug]`
-10. Add polish (loading states, toast messages, error handling)
+```
+notetaking/
+├── src/
+│   ├── main/
+│   │   ├── java/com/app/notetaking/
+│   │   │   ├── NoteApp.java
+│   │   │   ├── config/
+│   │   │   │   ├── SecurityConfig.java
+│   │   │   │   └── DatabaseConfig.java
+│   │   │   ├── controller/
+│   │   │   │   ├── PageController.java          (Thymeleaf page routes)
+│   │   │   │   └── api/
+│   │   │   │       └── NotesApiController.java  (REST JSON)
+│   │   │   ├── model/
+│   │   │   │   ├── User.java
+│   │   │   │   └── Note.java
+│   │   │   ├── repository/
+│   │   │   │   ├── UserRepository.java
+│   │   │   │   └── NoteRepository.java
+│   │   │   └── service/
+│   │   │       ├── UserService.java
+│   │   │       └── NoteService.java
+│   │   └── resources/
+│   │       ├── templates/
+│   │       │   ├── fragments/layout.html
+│   │       │   ├── index.html
+│   │       │   ├── auth/login.html
+│   │       │   ├── auth/register.html
+│   │       │   ├── dashboard.html
+│   │       │   ├── notes/editor.html
+│   │       │   └── public/note.html
+│   │       ├── static/
+│   │       │   └── js/editor.js
+│   │       ├── schema.sql
+│   │       └── application.properties
+│   └── test/
+│       └── java/com/app/notetaking/
+└── pom.xml
+```
+
+## 13. Key Dependencies (pom.xml)
+
+```xml
+<!-- Spring Boot Starters -->
+<dependency>spring-boot-starter-web</dependency>
+<dependency>spring-boot-starter-thymeleaf</dependency>
+<dependency>spring-boot-starter-security</dependency>
+<dependency>spring-boot-starter-jdbc</dependency>
+
+<!-- Thymeleaf Spring Security integration -->
+<dependency>thymeleaf-extras-springsecurity6</dependency>
+
+<!-- SQLite JDBC Driver -->
+<dependency>
+  <groupId>org.xerial</groupId>
+  <artifactId>sqlite-jdbc</artifactId>
+  <version>3.45.3.0</version>
+</dependency>
+```
+
+## 14. Development Workflow
+
+1. Initialize Spring Boot project via Spring Initializr (Web, Thymeleaf, Security, JDBC)
+2. Add SQLite JDBC dependency to `pom.xml`
+3. Configure SQLite `DataSource` in `application.properties` and `DatabaseConfig.java`
+4. Create `schema.sql` with all table and index definitions
+5. Implement `UserRepository` and `NoteRepository` using `JdbcTemplate`
+6. Configure Spring Security in `SecurityConfig.java` (form login, BCrypt, route rules)
+7. Implement `UserService` with registration logic (hash password, save user)
+8. Implement `NoteService` and `NotesApiController` (all REST endpoints)
+9. Build `PageController` for Thymeleaf page routes
+10. Create Thymeleaf templates with TailwindCSS and Quill.js
+11. Implement `static/js/editor.js` for auto-save, share toggle, and delete
+12. Test end-to-end: register → create note → edit → share → view public URL
